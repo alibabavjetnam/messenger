@@ -1,0 +1,20 @@
+{
+  "name": "4v2",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Bảng tín hiệu 2 kênh (cùng xu hướng / ngược xu hướng) cho dữ liệu Binance, viết bằng TypeScript",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "build:standalone": "node scripts/build-standalone.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  },
+  "license": "MIT"
+}
