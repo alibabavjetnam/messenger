@@ -159,6 +159,21 @@ export function lastClosedIndex(c: Candle[], intervalMs: number, asOf: number): 
   return k;
 }
 
+/** Đánh số các lần tải dữ liệu: chỉ kết quả của lần tải mới nhất được áp dụng. */
+export class LoadSeq {
+  private n = 0;
+
+  get current() { return this.n; }
+
+  /** Bắt đầu lần tải mới; mọi lần tải trước đó hết hiệu lực. */
+  begin() { return ++this.n; }
+
+  /** Hủy hiệu lực lần tải đang chạy (ví dụ người dùng vừa nạp dữ liệu dán tay). */
+  invalidate() { this.n++; }
+
+  isLatest(id: number) { return id === this.n; }
+}
+
 type LiveHandler = (interval: string, candle: Candle) => void;
 type StatusHandler = (status: 'connecting' | 'live' | 'retrying' | 'off') => void;
 
