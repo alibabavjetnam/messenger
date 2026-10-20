@@ -147,3 +147,30 @@ describe('kênh: không nhìn trước', () => {
     }
   });
 });
+
+describe('kênh: điều kiện Bollinger khi đóng cửa hiện tại vẫn ngoài dải', () => {
+  // 40 nến dao động quanh 100, rồi: nến 40 chọc thủng dải dưới, nến 41 đóng cửa trở lại trong dải,
+  // nến 42 lại đóng cửa dưới dải dưới.
+  const t0 = Date.UTC(2024, 0, 1);
+  const cs = Array.from({ length: 40 }, (_, k) => {
+    const c = 100 + (k % 2 ? 0.5 : -0.5);
+    return { t: t0 + k * HOUR, o: 100, h: Math.max(100, c) + 0.2, l: Math.min(100, c) - 0.2, c, v: 1 };
+  });
+  cs.push({ t: t0 + 40 * HOUR, o: 100, h: 100, l: 90, c: 91, v: 1 });
+  cs.push({ t: t0 + 41 * HOUR, o: 91, h: 100.2, l: 90.5, c: 100, v: 1 });
+  cs.push({ t: t0 + 42 * HOUR, o: 100, h: 100, l: 88, c: 89, v: 1 });
+  const bs = buildSeries(cs);
+  const bbCond = (i: number) => evalWithTrend({ d1: tr('UP'), tf: tr('UP'), series: bs, i, cfg }).conditions[2];
+
+  test('dữ liệu dựng tay đúng như mô tả', () => {
+    assert.ok(bs.low[40] <= (bs.bbLower[40] as number));
+    assert.ok(bs.close[41] > (bs.bbLower[41] as number));
+    assert.ok(bs.close[42] <= (bs.bbLower[42] as number));
+  });
+  test('nến 41 (đã quay vào trong) đạt; nến 42 (đóng cửa lại ngoài dải) không đạt', () => {
+    assert.equal(bbCond(41).state, 'pass');
+    const c = bbCond(42);
+    assert.equal(c.state, 'fail');
+    assert.equal(c.detail, 'Đã chọc dải dưới nhưng giá chưa quay vào trong');
+  });
+});
