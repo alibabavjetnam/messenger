@@ -8,7 +8,8 @@ import {
   type BacktestResult, type Candle, type ChannelResult, type ChannelStats, type Series, type Settings, type TrendResult,
 } from './core/types';
 import {
-  FetchError, INTERVAL_MS, LiveFeed, LoadSeq, aggregateToDaily, fetchKlines, klinesUrl, lastClosedIndex, parseRawCandles, upsertCandle,
+  FetchError, INTERVAL_MS, LiveFeed, LoadSeq, aggregateToDaily, fetchKlines, klinesUrl, lastClosedIndex, mergeCandles,
+  parseRawCandles, upsertCandle,
 } from './data/binance';
 import { PriceChart } from './ui/chart';
 
@@ -157,6 +158,21 @@ async function loadFromBinance() {
   else setStatus('static', 'Dữ liệu tĩnh');
 }
 
+/** Sau khi WebSocket kết nối lại: tải lại qua REST và gộp vào để bù các nến bị lỡ khi rớt mạng. */
+async function backfill() {
+  if (state.source !== 'binance') return;
+  const my = loads.current;
+  const { symbol, interval } = state.loaded;
+  const [tfRes, d1Res] = await Promise.allSettled([
+    fetchKlines(symbol, interval, LIMIT),
+    fetchKlines(symbol, '1d', LIMIT),
+  ]);
+  if (!loads.isLatest(my) || state.source !== 'binance') return;
+  if (tfRes.status === 'fulfilled') mergeCandles(state.tf, tfRes.value, LIMIT);
+  if (d1Res.status === 'fulfilled') mergeCandles(state.d1, d1Res.value, LIMIT);
+  if (tfRes.status === 'fulfilled' || d1Res.status === 'fulfilled') analyze(true);
+}
+
 function inferInterval(c: Candle[]): number {
   const diffs: number[] = [];
   for (let i = 1; i < c.length; i++) diffs.push(c[i].t - c[i - 1].t);
@@ -218,6 +234,7 @@ const live = new LiveFeed(
     else if (st === 'retrying') setStatus('retrying', 'Đang kết nối lại');
     else if (!state.loading && state.source === 'binance') setStatus('static', 'Dữ liệu tĩnh');
   },
+  () => void backfill(),
 );
 
 /* ------------------------------------------------------------------ */

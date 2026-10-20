@@ -152,6 +152,18 @@ export function upsertCandle(list: Candle[], k: Candle, max = 1000) {
   } else if (k.t === last.t) list[list.length - 1] = k;
 }
 
+/**
+ * Gộp một loạt nến (ví dụ tải lại qua REST) vào chuỗi đang có, sửa tại chỗ:
+ * nến trùng t được thay bằng bản mới, nến thiếu được chèn vào, giữ thứ tự và tối đa `max` nến cuối.
+ */
+export function mergeCandles(list: Candle[], fresh: Candle[], max = 1000) {
+  const map = new Map<number, Candle>();
+  for (const x of list) map.set(x.t, x);
+  for (const x of fresh) map.set(x.t, x);
+  const out = [...map.values()].sort((a, b) => a.t - b.t);
+  list.splice(0, list.length, ...out.slice(-max));
+}
+
 /** Chỉ số nến cuối cùng đã đóng tại thời điểm `asOf` (nến đóng lúc t + intervalMs); -1 nếu chưa có. */
 export function lastClosedIndex(c: Candle[], intervalMs: number, asOf: number): number {
   let k = c.length - 1;
@@ -185,7 +197,8 @@ export class LiveFeed {
   private timer: number | undefined;
   private stopped = true;
 
-  constructor(private onCandle: LiveHandler, private onStatus: StatusHandler) {}
+  /** onReconnect: gọi khi kết nối lại thành công sau khi rớt, để bên dùng tải bù các nến bị lỡ. */
+  constructor(private onCandle: LiveHandler, private onStatus: StatusHandler, private onReconnect: () => void = () => {}) {}
 
   start(symbol: string, intervals: string[]) {
     this.stop();
@@ -196,7 +209,12 @@ export class LiveFeed {
       this.onStatus(this.retry ? 'retrying' : 'connecting');
       const ws = new WebSocket(`${WS_HOSTS[this.hostIdx]}/stream?streams=${streams}`);
       this.ws = ws;
-      ws.onopen = () => { this.retry = 0; this.onStatus('live'); };
+      ws.onopen = () => {
+        const reconnected = this.retry > 0;
+        this.retry = 0;
+        this.onStatus('live');
+        if (reconnected) this.onReconnect();
+      };
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data as string);
