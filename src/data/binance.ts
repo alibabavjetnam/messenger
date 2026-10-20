@@ -152,6 +152,13 @@ export function upsertCandle(list: Candle[], k: Candle, max = 1000) {
   } else if (k.t === last.t) list[list.length - 1] = k;
 }
 
+/** Chỉ số nến cuối cùng đã đóng tại thời điểm `asOf` (nến đóng lúc t + intervalMs); -1 nếu chưa có. */
+export function lastClosedIndex(c: Candle[], intervalMs: number, asOf: number): number {
+  let k = c.length - 1;
+  while (k >= 0 && c[k].t + intervalMs > asOf) k--;
+  return k;
+}
+
 type LiveHandler = (interval: string, candle: Candle) => void;
 type StatusHandler = (status: 'connecting' | 'live' | 'retrying' | 'off') => void;
 

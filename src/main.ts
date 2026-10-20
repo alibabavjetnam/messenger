@@ -8,7 +8,7 @@ import {
   type BacktestResult, type Candle, type ChannelResult, type ChannelStats, type Series, type Settings, type TrendResult,
 } from './core/types';
 import {
-  FetchError, INTERVAL_MS, LiveFeed, aggregateToDaily, fetchKlines, klinesUrl, parseRawCandles, upsertCandle,
+  FetchError, INTERVAL_MS, LiveFeed, aggregateToDaily, fetchKlines, klinesUrl, lastClosedIndex, parseRawCandles, upsertCandle,
 } from './data/binance';
 import { PriceChart } from './ui/chart';
 
@@ -218,7 +218,9 @@ function analyze(withBacktest: boolean) {
   const tf = buildSeries(state.tf);
   const d1 = buildSeries(state.d1.length ? state.d1 : aggregateToDaily(state.tf));
   const i = tf.close.length - 1;
-  const d1Trend = trendAt(d1, d1.close.length - 1, state.settings);
+  // Xu hướng D1 chỉ dùng nến ngày đã đóng (như backtest): tính tới bây giờ, hoặc tới lúc đóng nến cuối nếu là dữ liệu cũ
+  const asOf = Math.min(Date.now(), tf.candles[i].t + state.intervalMs);
+  const d1Trend = trendAt(d1, lastClosedIndex(d1.candles, INTERVAL_MS['1d'], asOf), state.settings);
   const tfTrend = trendAt(tf, i, state.settings);
   const res = evaluateChannels({ d1: d1Trend, tf: tfTrend, series: tf, i, cfg: state.settings });
   lastSeries = { tf, d1 };
