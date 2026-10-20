@@ -10,6 +10,8 @@ export interface ChartInput {
   channels: ChannelResult[];
   trades: Trade[];
   resetZoom: boolean;
+  rsiLow: number; // ngưỡng RSI quá bán (tham số)
+  rsiHigh: number; // ngưỡng RSI quá mua (tham số)
 }
 
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -187,8 +189,8 @@ export class PriceChart {
           markLine: {
             symbol: 'none', silent: true, label: { show: true, color: muted, fontSize: 10, position: 'insideStartTop' },
             data: [
-              { yAxis: 30, lineStyle: { color: up, type: 'dashed', width: 1 } },
-              { yAxis: 70, lineStyle: { color: down, type: 'dashed', width: 1 } },
+              { yAxis: input.rsiLow, lineStyle: { color: up, type: 'dashed', width: 1 } },
+              { yAxis: input.rsiHigh, lineStyle: { color: down, type: 'dashed', width: 1 } },
             ],
           },
         },

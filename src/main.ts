@@ -318,6 +318,8 @@ function renderChart() {
     channels: isTF ? lastChannels : [],
     trades: isTF && state.bt ? state.bt.trades : [],
     resetZoom,
+    rsiLow: state.settings.rsiLow,
+    rsiHigh: state.settings.rsiHigh,
   });
   resetZoom = false;
 }
