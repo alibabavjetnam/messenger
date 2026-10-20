@@ -176,7 +176,9 @@ async function backfill() {
     fetchKlines(symbol, interval, LIMIT),
     fetchKlines(symbol, '1d', LIMIT),
   ]);
+  // Dữ liệu đã đổi sang cặp/khung khác trong lúc chờ: nến tải bù không còn thuộc chuỗi đang có
   if (!loads.isLatest(my) || state.source !== 'binance') return;
+  if (state.loaded.symbol !== symbol || state.loaded.interval !== interval) return;
   if (tfRes.status === 'fulfilled') mergeCandles(state.tf, tfRes.value, LIMIT);
   if (d1Res.status === 'fulfilled') mergeCandles(state.d1, d1Res.value, LIMIT);
   if (tfRes.status === 'fulfilled' || d1Res.status === 'fulfilled') analyze(true);
@@ -482,6 +484,8 @@ function bind() {
   liveToggle.addEventListener('change', () => {
     state.live = liveToggle.checked;
     store.set('live', state.live);
+    // Đang tải: lần tải đó tự mở Realtime (hoặc để dữ liệu tĩnh) theo state.live khi xong
+    if (state.loading) return;
     // Dữ liệu đang có đã cũ (Realtime tắt hoặc lần tải sau bị lỗi): tải bù khi kết nối xong
     if (state.live && state.source === 'binance') live.start(state.loaded.symbol, [state.loaded.interval, '1d'], true);
     else if (state.live && state.source !== 'binance') void loadFromBinance();

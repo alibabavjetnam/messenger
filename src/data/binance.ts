@@ -155,13 +155,17 @@ export function upsertCandle(list: Candle[], k: Candle, max = 1000) {
 /**
  * Gộp một loạt nến (ví dụ tải lại qua REST) vào chuỗi đang có, sửa tại chỗ:
  * nến trùng t được thay bằng bản mới, nến thiếu được chèn vào, giữ thứ tự và tối đa `max` nến cuối.
- * Riêng nến cuối của `fresh` có thể còn đang chạy lúc REST chụp: nếu chuỗi đã có nến đó (WS cập nhật, có thể đã đóng) thì giữ bản đang có.
+ * Riêng nến cuối của `fresh` có thể còn đang chạy lúc REST chụp: nếu chuỗi đã có nến đó thì giữ bản có khối lượng lớn hơn
+ * (khối lượng trong một nến không giảm nên đó là bản mới hơn), bằng nhau thì giữ bản đang có.
  */
 export function mergeCandles(list: Candle[], fresh: Candle[], max = 1000) {
   const map = new Map<number, Candle>();
   for (const x of list) map.set(x.t, x);
   const lastT = fresh.length ? fresh[fresh.length - 1].t : NaN;
-  for (const x of fresh) if (x.t !== lastT || !map.has(x.t)) map.set(x.t, x);
+  for (const x of fresh) {
+    const cur = map.get(x.t);
+    if (x.t !== lastT || !cur || x.v > cur.v) map.set(x.t, x);
+  }
   const out = [...map.values()].sort((a, b) => a.t - b.t);
   list.splice(0, list.length, ...out.slice(-max));
 }
