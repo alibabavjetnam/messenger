@@ -108,8 +108,11 @@ export function parseRawCandles(text: string): Candle[] {
     const p = line.split(/[,;\t]/).map((x) => x.trim().replace(/^"|"$/g, ''));
     if (p.length < 5) continue;
     let t = Number(p[0]);
-    if (!Number.isFinite(t)) t = Date.parse(p[0]);
-    else if (t < 1e11) t *= 1000; // giây → ms
+    if (!Number.isFinite(t)) {
+      // Ngày-giờ ISO không có Z/offset: coi là UTC (giống chuỗi chỉ-ngày), không theo giờ địa phương
+      const d = p[0];
+      t = Date.parse(/^\d{4}-\d\d-\d\d[ T]\d\d:\d\d(:\d\d(\.\d+)?)?$/.test(d) ? d.replace(' ', 'T') + 'Z' : d);
+    } else if (t < 1e11) t *= 1000; // giây → ms
     const c = rowToCandle([t, p[1], p[2], p[3], p[4], p[5] ?? 0]);
     if (c) csv.push(c);
   }
