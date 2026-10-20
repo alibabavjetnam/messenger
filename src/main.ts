@@ -1,6 +1,7 @@
 import { runBacktest } from './core/backtest';
 import { evaluateChannels } from './core/channels';
 import { buildSeries } from './core/indicators';
+import { SETTING_FIELDS, clampSetting, sanitizeSettings } from './core/settings';
 import { TREND_LABEL, trendAt } from './core/trend';
 import {
   DEFAULT_SETTINGS,
@@ -53,7 +54,7 @@ const state: State = {
   tf: [],
   d1: [],
   source: 'none',
-  settings: { ...DEFAULT_SETTINGS, ...store.get<Partial<Settings>>('settings', {}) },
+  settings: sanitizeSettings(store.get<unknown>('settings', {})),
   view: 'tf',
   chartType: store.get('chartType', 'candle'),
   live: store.get('live', true),
@@ -367,18 +368,6 @@ function setSymbol(sym: string) {
   void loadFromBinance();
 }
 
-const SETTING_FIELDS: { key: keyof Settings; label: string; step: number; min: number; max: number }[] = [
-  { key: 'rr', label: 'Tỉ lệ chốt lời (R:R)', step: 0.1, min: 0.5, max: 10 },
-  { key: 'lookbackWith', label: 'Số nến quét, kênh 1', step: 1, min: 10, max: 300 },
-  { key: 'lookbackCounter', label: 'Số nến quét, kênh 2', step: 1, min: 20, max: 400 },
-  { key: 'minGap', label: 'Khoảng cách tối thiểu đáy/đỉnh 1 và 2 (nến)', step: 1, min: 2, max: 100 },
-  { key: 'pivotLeft', label: 'Độ rộng đáy/đỉnh, bên trái', step: 1, min: 1, max: 20 },
-  { key: 'pivotRight', label: 'Độ rộng đáy/đỉnh, bên phải', step: 1, min: 1, max: 20 },
-  { key: 'rsiLow', label: 'Ngưỡng RSI quá bán', step: 1, min: 5, max: 50 },
-  { key: 'rsiHigh', label: 'Ngưỡng RSI quá mua', step: 1, min: 50, max: 95 },
-  { key: 'trendMinScore', label: 'Điểm tối thiểu công nhận xu hướng (trên 6)', step: 1, min: 2, max: 6 },
-];
-
 function renderSettings() {
   $('settingsForm').innerHTML = SETTING_FIELDS.map((f) => `
     <label>${esc(f.label)}
@@ -463,8 +452,8 @@ function bind() {
     const input = e.target as HTMLInputElement;
     const f = SETTING_FIELDS.find((x) => x.key === input.name);
     if (!f) return;
-    const v = Math.min(f.max, Math.max(f.min, Number(input.value)));
-    if (!Number.isFinite(v)) return;
+    const v = clampSetting(f, Number(input.value));
+    if (v === null) return;
     state.settings = { ...state.settings, [f.key]: v };
     input.value = String(v);
     store.set('settings', state.settings);
