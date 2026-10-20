@@ -2,3 +2,11 @@ node_modules/
 dist/
 .DS_Store
 *.log
+
+# Thu muc trao doi giua cac agent az
+.az/
+
+# Bien moi truong va secret
+.env
+.env.*
+!.env.example
