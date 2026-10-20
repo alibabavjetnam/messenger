@@ -155,11 +155,13 @@ export function upsertCandle(list: Candle[], k: Candle, max = 1000) {
 /**
  * Gộp một loạt nến (ví dụ tải lại qua REST) vào chuỗi đang có, sửa tại chỗ:
  * nến trùng t được thay bằng bản mới, nến thiếu được chèn vào, giữ thứ tự và tối đa `max` nến cuối.
+ * Riêng nến cuối của `fresh` có thể còn đang chạy lúc REST chụp: nếu chuỗi đã có nến đó (WS cập nhật, có thể đã đóng) thì giữ bản đang có.
  */
 export function mergeCandles(list: Candle[], fresh: Candle[], max = 1000) {
   const map = new Map<number, Candle>();
   for (const x of list) map.set(x.t, x);
-  for (const x of fresh) map.set(x.t, x);
+  const lastT = fresh.length ? fresh[fresh.length - 1].t : NaN;
+  for (const x of fresh) if (x.t !== lastT || !map.has(x.t)) map.set(x.t, x);
   const out = [...map.values()].sort((a, b) => a.t - b.t);
   list.splice(0, list.length, ...out.slice(-max));
 }
@@ -196,24 +198,31 @@ export class LiveFeed {
   private retry = 0;
   private timer: number | undefined;
   private stopped = true;
+  /** Có thể đã lỡ nến: đã có dữ liệu realtime rồi bị rớt, hoặc start trên dữ liệu cũ (resume). */
+  private gap = false;
 
-  /** onReconnect: gọi khi kết nối lại thành công sau khi rớt, để bên dùng tải bù các nến bị lỡ. */
+  /** onReconnect: gọi khi kết nối thành công mà có thể đã lỡ nến (nối lại sau khi rớt, hoặc start với resume), để bên dùng tải bù. */
   constructor(private onCandle: LiveHandler, private onStatus: StatusHandler, private onReconnect: () => void = () => {}) {}
 
-  start(symbol: string, intervals: string[]) {
+  /** resume = true: dữ liệu đang có đã cũ (ví dụ bật lại Realtime), cần tải bù khi kết nối xong. */
+  start(symbol: string, intervals: string[], resume = false) {
     this.stop();
     this.stopped = false;
+    this.gap = resume;
     const streams = [...new Set(intervals)].map((iv) => `${symbol.toLowerCase()}@kline_${iv}`).join('/');
     const connect = () => {
       if (this.stopped) return;
       this.onStatus(this.retry ? 'retrying' : 'connecting');
       const ws = new WebSocket(`${WS_HOSTS[this.hostIdx]}/stream?streams=${streams}`);
       this.ws = ws;
+      let opened = false;
       ws.onopen = () => {
-        const reconnected = this.retry > 0;
+        opened = true;
+        const missed = this.gap;
+        this.gap = false;
         this.retry = 0;
         this.onStatus('live');
-        if (reconnected) this.onReconnect();
+        if (missed) this.onReconnect();
       };
       ws.onmessage = (e) => {
         try {
@@ -225,6 +234,7 @@ export class LiveFeed {
       };
       ws.onclose = () => {
         if (this.stopped) return;
+        if (opened) this.gap = true; // chưa từng mở thì chưa có nến realtime nào bị lỡ
         this.retry++;
         this.hostIdx = (this.hostIdx + 1) % WS_HOSTS.length;
         this.onStatus('retrying');

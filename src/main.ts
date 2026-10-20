@@ -158,7 +158,7 @@ async function loadFromBinance() {
   else setStatus('static', 'Dữ liệu tĩnh');
 }
 
-/** Sau khi WebSocket kết nối lại: tải lại qua REST và gộp vào để bù các nến bị lỡ khi rớt mạng. */
+/** Sau khi WebSocket kết nối lại hoặc bật lại Realtime trên dữ liệu cũ: tải lại qua REST và gộp vào để bù các nến bị lỡ khi rớt mạng. */
 async function backfill() {
   if (state.source !== 'binance') return;
   const my = loads.current;
@@ -171,6 +171,9 @@ async function backfill() {
   if (tfRes.status === 'fulfilled') mergeCandles(state.tf, tfRes.value, LIMIT);
   if (d1Res.status === 'fulfilled') mergeCandles(state.d1, d1Res.value, LIMIT);
   if (tfRes.status === 'fulfilled' || d1Res.status === 'fulfilled') analyze(true);
+  if (tfRes.status === 'rejected' || d1Res.status === 'rejected') {
+    notice('<b>Không tải bù được nến bị lỡ lúc mất kết nối</b>, dữ liệu có thể thiếu nến. Bấm “Tải dữ liệu” để tải lại.');
+  }
 }
 
 function inferInterval(c: Candle[]): number {
@@ -470,7 +473,8 @@ function bind() {
   liveToggle.addEventListener('change', () => {
     state.live = liveToggle.checked;
     store.set('live', state.live);
-    if (state.live && state.source === 'binance') live.start(state.loaded.symbol, [state.loaded.interval, '1d']);
+    // Dữ liệu đang có đã cũ (Realtime tắt hoặc lần tải sau bị lỗi): tải bù khi kết nối xong
+    if (state.live && state.source === 'binance') live.start(state.loaded.symbol, [state.loaded.interval, '1d'], true);
     else if (state.live && state.source !== 'binance') void loadFromBinance();
     else { live.stop(); setStatus('static', 'Dữ liệu tĩnh'); }
   });
