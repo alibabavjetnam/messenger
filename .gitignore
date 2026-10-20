@@ -10,3 +10,6 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Ban build test (esbuild -> node --test)
+.test-out/

@@ -1,13 +1,15 @@
 import { runBacktest } from './core/backtest';
 import { evaluateChannels } from './core/channels';
 import { buildSeries } from './core/indicators';
+import { SETTING_FIELDS, clampSetting, sanitizePrefs, sanitizeSettings } from './core/settings';
 import { TREND_LABEL, trendAt } from './core/trend';
 import {
   DEFAULT_SETTINGS,
   type BacktestResult, type Candle, type ChannelResult, type ChannelStats, type Series, type Settings, type TrendResult,
 } from './core/types';
 import {
-  FetchError, INTERVAL_MS, LiveFeed, aggregateToDaily, fetchKlines, klinesUrl, parseRawCandles, upsertCandle,
+  FetchError, INTERVAL_MS, LiveFeed, LoadSeq, aggregateToDaily, fetchKlines, klinesUrl, lastClosedIndex, mergeCandles,
+  parseRawCandles, upsertCandle,
 } from './data/binance';
 import { PriceChart } from './ui/chart';
 
@@ -33,6 +35,8 @@ interface State {
   symbol: string;
   interval: string;
   intervalMs: number;
+  /** Cặp/khung của dữ liệu Binance đang có (chỉ đổi khi tải thành công); symbol/interval là lựa chọn trên giao diện. */
+  loaded: { symbol: string; interval: string };
   tf: Candle[];
   d1: Candle[];
   source: 'none' | 'binance' | 'manual';
@@ -46,24 +50,35 @@ interface State {
   loading: boolean;
 }
 
+// Giá trị đã lưu có thể sai kiểu (sửa tay, phiên bản cũ): kiểm kiểu, sai thì dùng mặc định
+const prefs = sanitizePrefs({
+  symbol: store.get<unknown>('symbol', null),
+  interval: store.get<unknown>('interval', null),
+  chartType: store.get<unknown>('chartType', null),
+  live: store.get<unknown>('live', null),
+  watchlist: store.get<unknown>('watchlist', null),
+  theme: store.get<unknown>('theme', null),
+}, TF_LIST);
+
 const state: State = {
-  symbol: store.get('symbol', 'BTCUSDT'),
-  interval: store.get('interval', '15m'),
+  symbol: prefs.symbol,
+  interval: prefs.interval,
   intervalMs: 0,
+  loaded: { symbol: '', interval: '' },
   tf: [],
   d1: [],
   source: 'none',
-  settings: { ...DEFAULT_SETTINGS, ...store.get<Partial<Settings>>('settings', {}) },
+  settings: sanitizeSettings(store.get<unknown>('settings', {})),
   view: 'tf',
-  chartType: store.get('chartType', 'candle'),
-  live: store.get('live', true),
-  watchlist: store.get('watchlist', ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']),
+  chartType: prefs.chartType,
+  live: prefs.live,
+  watchlist: prefs.watchlist,
   bt: null,
   lastReady: {},
   loading: false,
 };
-if (!TF_LIST.includes(state.interval)) state.interval = '15m';
 state.intervalMs = INTERVAL_MS[state.interval];
+state.loaded = { symbol: state.symbol, interval: state.interval };
 
 /* ------------------------------------------------------------------ */
 /* Tiện ích DOM                                                         */
@@ -101,9 +116,16 @@ function notice(html: string | null, kind: 'error' | 'info' = 'error') {
 /* ------------------------------------------------------------------ */
 /* Tải dữ liệu                                                          */
 /* ------------------------------------------------------------------ */
+const loads = new LoadSeq();
+
 async function loadFromBinance() {
   const symbol = state.symbol;
   const interval = state.interval;
+  const my = loads.begin();
+  // Bỏ lượt vẽ realtime đang chờ của dữ liệu cũ
+  window.clearTimeout(renderTimer);
+  renderTimer = undefined;
+  needBacktest = false;
   state.loading = true;
   $('reloadBtn').setAttribute('disabled', '');
   setStatus('loading', 'Đang tải');
@@ -114,10 +136,10 @@ async function loadFromBinance() {
     fetchKlines(symbol, interval, LIMIT),
     fetchKlines(symbol, '1d', LIMIT),
   ]);
+  // Đã có lần tải mới hơn (đổi cặp/khung, tải lại) hoặc người dùng đã dán dữ liệu: bỏ kết quả này
+  if (!loads.isLatest(my)) return;
   state.loading = false;
   $('reloadBtn').removeAttribute('disabled');
-  // Người dùng đã đổi cặp/khung trong lúc chờ: bỏ kết quả cũ
-  if (symbol !== state.symbol || interval !== state.interval) return;
 
   if (tfRes.status === 'rejected') {
     const err = tfRes.reason as Error;
@@ -136,12 +158,33 @@ async function loadFromBinance() {
     notice('Không tải được nến ngày, hệ thống đang gộp tạm từ dữ liệu khung giao dịch (số ngày sẽ ít hơn).', 'info');
   }
   state.source = 'binance';
+  state.loaded = { symbol, interval };
   state.intervalMs = INTERVAL_MS[interval];
   state.lastReady = {};
   resetZoom = true;
   analyze(true);
   if (state.live) live.start(symbol, [interval, '1d']);
   else setStatus('static', 'Dữ liệu tĩnh');
+}
+
+/** Sau khi WebSocket kết nối lại hoặc bật lại Realtime trên dữ liệu cũ: tải lại qua REST và gộp vào để bù các nến bị lỡ khi rớt mạng. */
+async function backfill() {
+  if (state.source !== 'binance') return;
+  const my = loads.current;
+  const { symbol, interval } = state.loaded;
+  const [tfRes, d1Res] = await Promise.allSettled([
+    fetchKlines(symbol, interval, LIMIT),
+    fetchKlines(symbol, '1d', LIMIT),
+  ]);
+  // Dữ liệu đã đổi sang cặp/khung khác trong lúc chờ: nến tải bù không còn thuộc chuỗi đang có
+  if (!loads.isLatest(my) || state.source !== 'binance') return;
+  if (state.loaded.symbol !== symbol || state.loaded.interval !== interval) return;
+  if (tfRes.status === 'fulfilled') mergeCandles(state.tf, tfRes.value, LIMIT);
+  if (d1Res.status === 'fulfilled') mergeCandles(state.d1, d1Res.value, LIMIT);
+  if (tfRes.status === 'fulfilled' || d1Res.status === 'fulfilled') analyze(true);
+  if (tfRes.status === 'rejected' || d1Res.status === 'rejected') {
+    notice('<b>Không tải bù được nến bị lỡ lúc mất kết nối</b>, dữ liệu có thể thiếu nến. Bấm “Tải dữ liệu” để tải lại.');
+  }
 }
 
 function inferInterval(c: Candle[]): number {
@@ -156,6 +199,10 @@ function loadManual() {
     const tf = parseRawCandles(($('manualTF') as HTMLTextAreaElement).value);
     const d1Text = ($('manualD1') as HTMLTextAreaElement).value.trim();
     const d1 = d1Text ? parseRawCandles(d1Text) : aggregateToDaily(tf);
+    // Hủy lần tải Binance đang chạy (nếu có) để nó không ghi đè dữ liệu dán tay
+    loads.invalidate();
+    state.loading = false;
+    $('reloadBtn').removeAttribute('disabled');
     live.stop();
     ($('liveToggle') as HTMLInputElement).checked = false;
     state.live = false;
@@ -182,11 +229,11 @@ let needBacktest = false;
 const live = new LiveFeed(
   (iv, candle) => {
     if (state.source !== 'binance') return;
-    const target = iv === state.interval ? state.tf : iv === '1d' ? state.d1 : null;
+    const target = iv === state.loaded.interval ? state.tf : iv === '1d' ? state.d1 : null;
     if (!target) return;
     const prevLast = target[target.length - 1]?.t;
     upsertCandle(target, candle, LIMIT);
-    if (iv === state.interval && candle.t !== prevLast) needBacktest = true; // một nến vừa đóng
+    if (iv === state.loaded.interval && candle.t !== prevLast) needBacktest = true; // một nến vừa đóng
     if (renderTimer === undefined) {
       renderTimer = window.setTimeout(() => {
         renderTimer = undefined;
@@ -201,6 +248,7 @@ const live = new LiveFeed(
     else if (st === 'retrying') setStatus('retrying', 'Đang kết nối lại');
     else if (!state.loading && state.source === 'binance') setStatus('static', 'Dữ liệu tĩnh');
   },
+  () => void backfill(),
 );
 
 /* ------------------------------------------------------------------ */
@@ -217,7 +265,9 @@ function analyze(withBacktest: boolean) {
   const tf = buildSeries(state.tf);
   const d1 = buildSeries(state.d1.length ? state.d1 : aggregateToDaily(state.tf));
   const i = tf.close.length - 1;
-  const d1Trend = trendAt(d1, d1.close.length - 1, state.settings);
+  // Xu hướng D1 chỉ dùng nến ngày đã đóng (như backtest): tính tới bây giờ, hoặc tới lúc đóng nến cuối nếu là dữ liệu cũ
+  const asOf = Math.min(Date.now(), tf.candles[i].t + state.intervalMs);
+  const d1Trend = trendAt(d1, lastClosedIndex(d1.candles, INTERVAL_MS['1d'], asOf), state.settings);
   const tfTrend = trendAt(tf, i, state.settings);
   const res = evaluateChannels({ d1: d1Trend, tf: tfTrend, series: tf, i, cfg: state.settings });
   lastSeries = { tf, d1 };
@@ -226,7 +276,7 @@ function analyze(withBacktest: boolean) {
   if (withBacktest || !state.bt) state.bt = runBacktest(tf, d1, state.intervalMs, state.settings);
 
   renderTrend($('trendD1'), 'Biểu đồ ngày (D1)', d1Trend);
-  renderTrend($('trendTF'), `Khung giao dịch (${state.source === 'manual' ? 'dữ liệu dán' : state.interval})`, tfTrend);
+  renderTrend($('trendTF'), `Khung giao dịch (${state.source === 'manual' ? 'dữ liệu dán' : state.loaded.interval})`, tfTrend);
   renderChannel($('channelWith'), 1, res.with);
   renderChannel($('channelCounter'), 2, res.counter);
   renderBacktest(state.bt);
@@ -307,16 +357,18 @@ function renderChart() {
   if (!lastSeries) return;
   const isTF = state.view === 'tf';
   const series = isTF ? lastSeries.tf : lastSeries.d1;
-  const label = state.source === 'manual' ? 'dữ liệu dán' : state.symbol;
+  const label = state.source === 'manual' ? 'dữ liệu dán' : state.loaded.symbol;
   chart.render({
     series,
     intervalMs: isTF ? state.intervalMs : INTERVAL_MS['1d'],
-    title: `${label} · ${isTF ? (state.source === 'manual' ? 'khung giao dịch' : state.interval) : '1D'}`,
+    title: `${label} · ${isTF ? (state.source === 'manual' ? 'khung giao dịch' : state.loaded.interval) : '1D'}`,
     type: state.chartType,
     marks: isTF ? lastChannels.flatMap((c) => c.marks) : [],
     channels: isTF ? lastChannels : [],
     trades: isTF && state.bt ? state.bt.trades : [],
     resetZoom,
+    rsiLow: state.settings.rsiLow,
+    rsiHigh: state.settings.rsiHigh,
   });
   resetZoom = false;
 }
@@ -325,10 +377,10 @@ function alertIfReady(ch: ChannelResult) {
   const was = state.lastReady[ch.id];
   state.lastReady[ch.id] = ch.ready;
   if (ch.ready && was === false) {
-    notice(`<b>Kênh ${ch.id === 'with' ? 1 : 2} vừa đủ điều kiện ${ch.direction === 'BUY' ? 'mua' : 'bán'}</b> trên ${esc(state.symbol)} ${state.interval}.`, 'info');
+    notice(`<b>Kênh ${ch.id === 'with' ? 1 : 2} vừa đủ điều kiện ${ch.direction === 'BUY' ? 'mua' : 'bán'}</b> trên ${esc(state.loaded.symbol)} ${state.loaded.interval}.`, 'info');
   }
   const anyReady = lastChannels.some((c) => c.ready);
-  document.title = `${anyReady ? '● ' : ''}${state.symbol} · 4v2`;
+  document.title = `${anyReady ? '● ' : ''}${state.loaded.symbol} · 4v2`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -367,18 +419,6 @@ function setSymbol(sym: string) {
   void loadFromBinance();
 }
 
-const SETTING_FIELDS: { key: keyof Settings; label: string; step: number; min: number; max: number }[] = [
-  { key: 'rr', label: 'Tỉ lệ chốt lời (R:R)', step: 0.1, min: 0.5, max: 10 },
-  { key: 'lookbackWith', label: 'Số nến quét, kênh 1', step: 1, min: 10, max: 300 },
-  { key: 'lookbackCounter', label: 'Số nến quét, kênh 2', step: 1, min: 20, max: 400 },
-  { key: 'minGap', label: 'Khoảng cách tối thiểu đáy/đỉnh 1 và 2 (nến)', step: 1, min: 2, max: 100 },
-  { key: 'pivotLeft', label: 'Độ rộng đáy/đỉnh, bên trái', step: 1, min: 1, max: 20 },
-  { key: 'pivotRight', label: 'Độ rộng đáy/đỉnh, bên phải', step: 1, min: 1, max: 20 },
-  { key: 'rsiLow', label: 'Ngưỡng RSI quá bán', step: 1, min: 5, max: 50 },
-  { key: 'rsiHigh', label: 'Ngưỡng RSI quá mua', step: 1, min: 50, max: 95 },
-  { key: 'trendMinScore', label: 'Điểm tối thiểu công nhận xu hướng (trên 6)', step: 1, min: 2, max: 6 },
-];
-
 function renderSettings() {
   $('settingsForm').innerHTML = SETTING_FIELDS.map((f) => `
     <label>${esc(f.label)}
@@ -415,7 +455,6 @@ function bind() {
     const tf = (e.target as HTMLElement).closest<HTMLElement>('[data-tf]')?.dataset.tf;
     if (!tf || tf === state.interval) return;
     state.interval = tf;
-    state.intervalMs = INTERVAL_MS[tf];
     store.set('interval', tf);
     renderTfGroup();
     updateRawLink();
@@ -445,7 +484,10 @@ function bind() {
   liveToggle.addEventListener('change', () => {
     state.live = liveToggle.checked;
     store.set('live', state.live);
-    if (state.live && state.source === 'binance') live.start(state.symbol, [state.interval, '1d']);
+    // Đang tải: lần tải đó tự mở Realtime (hoặc để dữ liệu tĩnh) theo state.live khi xong
+    if (state.loading) return;
+    // Dữ liệu đang có đã cũ (Realtime tắt hoặc lần tải sau bị lỗi): tải bù khi kết nối xong
+    if (state.live && state.source === 'binance') live.start(state.loaded.symbol, [state.loaded.interval, '1d'], true);
     else if (state.live && state.source !== 'binance') void loadFromBinance();
     else { live.stop(); setStatus('static', 'Dữ liệu tĩnh'); }
   });
@@ -463,8 +505,8 @@ function bind() {
     const input = e.target as HTMLInputElement;
     const f = SETTING_FIELDS.find((x) => x.key === input.name);
     if (!f) return;
-    const v = Math.min(f.max, Math.max(f.min, Number(input.value)));
-    if (!Number.isFinite(v)) return;
+    const v = clampSetting(f, Number(input.value));
+    if (v === null) return;
     state.settings = { ...state.settings, [f.key]: v };
     input.value = String(v);
     store.set('settings', state.settings);
@@ -499,8 +541,7 @@ function bind() {
 /* ------------------------------------------------------------------ */
 /* Khởi động                                                           */
 /* ------------------------------------------------------------------ */
-const savedTheme = store.get<string | null>('theme', null);
-if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+if (prefs.theme) document.documentElement.dataset.theme = prefs.theme;
 ($('symbolInput') as HTMLInputElement).value = state.symbol;
 renderTfGroup();
 renderWatchlist();

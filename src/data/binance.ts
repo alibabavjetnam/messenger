@@ -108,8 +108,11 @@ export function parseRawCandles(text: string): Candle[] {
     const p = line.split(/[,;\t]/).map((x) => x.trim().replace(/^"|"$/g, ''));
     if (p.length < 5) continue;
     let t = Number(p[0]);
-    if (!Number.isFinite(t)) t = Date.parse(p[0]);
-    else if (t < 1e11) t *= 1000; // giây → ms
+    if (!Number.isFinite(t)) {
+      // Ngày-giờ ISO không có Z/offset: coi là UTC (giống chuỗi chỉ-ngày), không theo giờ địa phương
+      const d = p[0];
+      t = Date.parse(/^\d{4}-\d\d-\d\d[ T]\d\d:\d\d(:\d\d(\.\d+)?)?$/.test(d) ? d.replace(' ', 'T') + 'Z' : d);
+    } else if (t < 1e11) t *= 1000; // giây → ms
     const c = rowToCandle([t, p[1], p[2], p[3], p[4], p[5] ?? 0]);
     if (c) csv.push(c);
   }
@@ -149,6 +152,46 @@ export function upsertCandle(list: Candle[], k: Candle, max = 1000) {
   } else if (k.t === last.t) list[list.length - 1] = k;
 }
 
+/**
+ * Gộp một loạt nến (ví dụ tải lại qua REST) vào chuỗi đang có, sửa tại chỗ:
+ * nến trùng t được thay bằng bản mới, nến thiếu được chèn vào, giữ thứ tự và tối đa `max` nến cuối.
+ * Riêng nến cuối của `fresh` có thể còn đang chạy lúc REST chụp: nếu chuỗi đã có nến đó thì giữ bản có khối lượng lớn hơn
+ * (khối lượng trong một nến không giảm nên đó là bản mới hơn), bằng nhau thì giữ bản đang có.
+ */
+export function mergeCandles(list: Candle[], fresh: Candle[], max = 1000) {
+  const map = new Map<number, Candle>();
+  for (const x of list) map.set(x.t, x);
+  const lastT = fresh.length ? fresh[fresh.length - 1].t : NaN;
+  for (const x of fresh) {
+    const cur = map.get(x.t);
+    if (x.t !== lastT || !cur || x.v > cur.v) map.set(x.t, x);
+  }
+  const out = [...map.values()].sort((a, b) => a.t - b.t);
+  list.splice(0, list.length, ...out.slice(-max));
+}
+
+/** Chỉ số nến cuối cùng đã đóng tại thời điểm `asOf` (nến đóng lúc t + intervalMs); -1 nếu chưa có. */
+export function lastClosedIndex(c: Candle[], intervalMs: number, asOf: number): number {
+  let k = c.length - 1;
+  while (k >= 0 && c[k].t + intervalMs > asOf) k--;
+  return k;
+}
+
+/** Đánh số các lần tải dữ liệu: chỉ kết quả của lần tải mới nhất được áp dụng. */
+export class LoadSeq {
+  private n = 0;
+
+  get current() { return this.n; }
+
+  /** Bắt đầu lần tải mới; mọi lần tải trước đó hết hiệu lực. */
+  begin() { return ++this.n; }
+
+  /** Hủy hiệu lực lần tải đang chạy (ví dụ người dùng vừa nạp dữ liệu dán tay). */
+  invalidate() { this.n++; }
+
+  isLatest(id: number) { return id === this.n; }
+}
+
 type LiveHandler = (interval: string, candle: Candle) => void;
 type StatusHandler = (status: 'connecting' | 'live' | 'retrying' | 'off') => void;
 
@@ -159,19 +202,32 @@ export class LiveFeed {
   private retry = 0;
   private timer: number | undefined;
   private stopped = true;
+  /** Có thể đã lỡ nến: đã có dữ liệu realtime rồi bị rớt, hoặc start trên dữ liệu cũ (resume). */
+  private gap = false;
 
-  constructor(private onCandle: LiveHandler, private onStatus: StatusHandler) {}
+  /** onReconnect: gọi khi kết nối thành công mà có thể đã lỡ nến (nối lại sau khi rớt, hoặc start với resume), để bên dùng tải bù. */
+  constructor(private onCandle: LiveHandler, private onStatus: StatusHandler, private onReconnect: () => void = () => {}) {}
 
-  start(symbol: string, intervals: string[]) {
+  /** resume = true: dữ liệu đang có đã cũ (ví dụ bật lại Realtime), cần tải bù khi kết nối xong. */
+  start(symbol: string, intervals: string[], resume = false) {
     this.stop();
     this.stopped = false;
+    this.gap = resume;
     const streams = [...new Set(intervals)].map((iv) => `${symbol.toLowerCase()}@kline_${iv}`).join('/');
     const connect = () => {
       if (this.stopped) return;
       this.onStatus(this.retry ? 'retrying' : 'connecting');
       const ws = new WebSocket(`${WS_HOSTS[this.hostIdx]}/stream?streams=${streams}`);
       this.ws = ws;
-      ws.onopen = () => { this.retry = 0; this.onStatus('live'); };
+      let opened = false;
+      ws.onopen = () => {
+        opened = true;
+        const missed = this.gap;
+        this.gap = false;
+        this.retry = 0;
+        this.onStatus('live');
+        if (missed) this.onReconnect();
+      };
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data as string);
@@ -182,6 +238,7 @@ export class LiveFeed {
       };
       ws.onclose = () => {
         if (this.stopped) return;
+        if (opened) this.gap = true; // chưa từng mở thì chưa có nến realtime nào bị lỡ
         this.retry++;
         this.hostIdx = (this.hostIdx + 1) % WS_HOSTS.length;
         this.onStatus('retrying');
