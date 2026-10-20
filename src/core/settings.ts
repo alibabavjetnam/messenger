@@ -38,3 +38,44 @@ export function sanitizeSettings(raw: unknown): Settings {
   }
   return out;
 }
+
+/** Các lựa chọn giao diện lưu trong localStorage (ngoài tham số chiến lược). */
+export interface Prefs {
+  symbol: string;
+  interval: string;
+  chartType: 'candle' | 'line';
+  live: boolean;
+  watchlist: string[];
+  theme: 'light' | 'dark' | null;
+}
+
+export const DEFAULT_PREFS: Prefs = {
+  symbol: 'BTCUSDT',
+  interval: '15m',
+  chartType: 'candle',
+  live: true,
+  watchlist: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'],
+  theme: null,
+};
+
+/** Mã cặp như ô nhập: chữ in hoa và số; '' nếu không phải chuỗi. */
+const normSymbol = (x: unknown) => (typeof x === 'string' ? x.toUpperCase().replace(/[^A-Z0-9]/g, '') : '');
+
+/**
+ * Đọc lựa chọn đã lưu (localStorage): khóa thiếu hoặc sai kiểu dùng mặc định.
+ * `intervals`: các khung được phép. watchlist là mảng thì giữ các mã hợp lệ (không trùng), mảng rỗng được giữ.
+ */
+export function sanitizePrefs(raw: Partial<Record<keyof Prefs, unknown>>, intervals: readonly string[]): Prefs {
+  const symbol = normSymbol(raw.symbol);
+  const iv = raw.interval;
+  return {
+    symbol: symbol || DEFAULT_PREFS.symbol,
+    interval: typeof iv === 'string' && intervals.includes(iv) ? iv : DEFAULT_PREFS.interval,
+    chartType: raw.chartType === 'line' || raw.chartType === 'candle' ? raw.chartType : DEFAULT_PREFS.chartType,
+    live: typeof raw.live === 'boolean' ? raw.live : DEFAULT_PREFS.live,
+    watchlist: Array.isArray(raw.watchlist)
+      ? [...new Set(raw.watchlist.map(normSymbol).filter(Boolean))]
+      : [...DEFAULT_PREFS.watchlist],
+    theme: raw.theme === 'light' || raw.theme === 'dark' ? raw.theme : DEFAULT_PREFS.theme,
+  };
+}

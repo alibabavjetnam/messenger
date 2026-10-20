@@ -1,7 +1,7 @@
 import { runBacktest } from './core/backtest';
 import { evaluateChannels } from './core/channels';
 import { buildSeries } from './core/indicators';
-import { SETTING_FIELDS, clampSetting, sanitizeSettings } from './core/settings';
+import { SETTING_FIELDS, clampSetting, sanitizePrefs, sanitizeSettings } from './core/settings';
 import { TREND_LABEL, trendAt } from './core/trend';
 import {
   DEFAULT_SETTINGS,
@@ -50,9 +50,19 @@ interface State {
   loading: boolean;
 }
 
+// Giá trị đã lưu có thể sai kiểu (sửa tay, phiên bản cũ): kiểm kiểu, sai thì dùng mặc định
+const prefs = sanitizePrefs({
+  symbol: store.get<unknown>('symbol', null),
+  interval: store.get<unknown>('interval', null),
+  chartType: store.get<unknown>('chartType', null),
+  live: store.get<unknown>('live', null),
+  watchlist: store.get<unknown>('watchlist', null),
+  theme: store.get<unknown>('theme', null),
+}, TF_LIST);
+
 const state: State = {
-  symbol: store.get('symbol', 'BTCUSDT'),
-  interval: store.get('interval', '15m'),
+  symbol: prefs.symbol,
+  interval: prefs.interval,
   intervalMs: 0,
   loaded: { symbol: '', interval: '' },
   tf: [],
@@ -60,14 +70,13 @@ const state: State = {
   source: 'none',
   settings: sanitizeSettings(store.get<unknown>('settings', {})),
   view: 'tf',
-  chartType: store.get('chartType', 'candle'),
-  live: store.get('live', true),
-  watchlist: store.get('watchlist', ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']),
+  chartType: prefs.chartType,
+  live: prefs.live,
+  watchlist: prefs.watchlist,
   bt: null,
   lastReady: {},
   loading: false,
 };
-if (!TF_LIST.includes(state.interval)) state.interval = '15m';
 state.intervalMs = INTERVAL_MS[state.interval];
 state.loaded = { symbol: state.symbol, interval: state.interval };
 
@@ -528,8 +537,7 @@ function bind() {
 /* ------------------------------------------------------------------ */
 /* Khởi động                                                           */
 /* ------------------------------------------------------------------ */
-const savedTheme = store.get<string | null>('theme', null);
-if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+if (prefs.theme) document.documentElement.dataset.theme = prefs.theme;
 ($('symbolInput') as HTMLInputElement).value = state.symbol;
 renderTfGroup();
 renderWatchlist();
